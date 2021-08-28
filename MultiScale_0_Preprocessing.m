@@ -4,11 +4,12 @@
 % Project: Multi-scale Memory Decoding Model
 
 clear; clc
-addpath C:\Users\Rob\Desktop\MATLAB\fieldtrip\ %%windows
-
+%addpath C:\Users\Rob\Desktop\MATLAB\fieldtrip\ %%windows
+addpath('/Users/robertsutherland/Desktop/MATLAB/fieldtrip'); %%Mac
+addpath('/Users/robertsutherland/Desktop/MATLAB/fieldtrip/preproc');%%Mac
 %% Open raw data file
 %{
-
+%rawData = openNSx('20190419_Keck15_Recording.ns6');
 ==================== Elements in the rawData ============================
 "rawData.RawData" is the header variable - you may just ignore it
 "rawData.ElectrodesInfo" tells your the basic information of electrodes, you can find VALID recording bank/channel here
@@ -16,8 +17,7 @@ addpath C:\Users\Rob\Desktop\MATLAB\fieldtrip\ %%windows
 "rawData.Data" is the variable of the actual raw neural signal, and you need to use it for extracting LFP 
 First, take a look at the dimensionality of the signal
 %} 
-%if you dont have this locally you should run the line below
-%rawData = openNSx('20190419_Keck15_Recording.ns6'); 
+
 rawData = load('rawDataMatFormat.mat').rawData;
 numChannel = size(rawData.Data, 1);
 numPoints = size(rawData.Data, 2); 
@@ -39,8 +39,6 @@ channels = [1:10, 17:26]; % All recording channels
 CA3_channels = [1:6, 17:22]; % CA3 channels from hippocampus
 CA1_channels = [7:10, 23:26];
 
-% Now extract the raw neural signal
-rawSignal = rawData.Data(channels, :);
 
 %% Gather Metadata
 
@@ -65,41 +63,105 @@ end
 
 % Create a FieldTrip data struct to begin preprocessing
 dataStructRaw = makeDataStruct(rawData,behavioralData);
-
-
-
-%Apply narrow notch filter to remove 60Hz line noise
-%Vector will be passed in of 60Hz, the 2nd, 3rd and 4th harmonic
-dataStructRaw.trial{1,1} = ft_preproc_dftfilter(dataStructRaw.trial{1,1}, dataStructRaw.fsample, [60,120,180,240]);
+clearvars rawData behavioralData;
 
 
 %%
+%Create cfg.trl Matrix in form (ntrials x 3) where first column is start sample
+%sencond column is stop sample and thrid is trigger sample
 
-windowLen = 4;
 
-% For example, to extract the first trial information
-firstTrialTimePoint = Sample_Resp(1);
-firstTrial_start = (firstTrialTimePoint - 2) * samplingFreq; % 2 sec BEFORE Sample Response
-firstTrial_end = (firstTrialTimePoint + 2) * samplingFreq; % 2 sec AFTER Sample Response
-firstTrial_Extracted = rawSignal(:, firstTrial_start : firstTrial_end);
 
+
+windowLen = 8; %we only care about the 4 sec window but add paddding for data processing TODO: Investigate how much
+trialLength = windowLen * samplingFreq; 
+
+cfg = {};
+cfg.trl = zeros(numTrial,3);
+for i=1:numTrial
+    trialStarts = floor(Sample_Resp(i)* samplingFreq)-trialLength/2;
+    trialEnds =  floor(Sample_Resp(i)* samplingFreq)+trialLength/2-1;
+    trialTrig = Sample_Resp(i)*samplingFreq;
+    cfg.trl(i,:) = [trialStarts, trialEnds, trialTrig];
+end
+
+
+cfg.hdr = {};
+
+cfg.hdr.chantype = 'unknown';
+cfg.hdr.chanunit = 'mV';
+
+%call ft_redefinetrial to segment raw data into trials 
+dataRawSeged = ft_redefinetrial(cfg, dataStructRaw);
+
+
+rawTrl = dataRawSeged.trial;
+
+%%
+clc
+%Apply narrow spectrum interpolation to remove 60Hz line noise
+%Vector will be passed in of 60Hz, the 2nd, 3rd and 4th harmonic
+%subplot(3,1,1);
+%plot(real(fftshift(fft(rawTrl(1,:)))));
+
+%Apply narrow spectrum interpolation to remove 60Hz line noise
+%Vector will be passed in of 60Hz, the 2nd, 3rd and 4th harmonic
+for i = 1:length(dataRawSeged.trial)
+    dataRawSeged.trial{i} = ft_preproc_dftfilter(dataRawSeged.trial{i}, dataStructRaw.fsample,[60,120,180],'dftreplace','neighbour');
+end
+
+%subplot(3,1,2);
+%plot(real(fftshift(fft(dataRawSeged.trial{1}(1,:)))));
+
+%Perform a global Bandpass filter to isolate LFP singal
+%4th order low and high pass between 20 and 250 Hz 
+cfg.lpfilter = 'yes';
+cfg.hpfilter = 'yes';
+cfg.lpfiltord = 6;
+cfg.hpfiltord = 4;
+
+cfg.lpfreq = 250;
+cfg.hpfreq = 10;
+dataDenoised = ft_preprocessing(cfg,dataRawSeged);
+
+%subplot(3,1,3);
+%plot(real(fftshift(fft(gleeb.trial{1}(1,:)))))
+
+
+%%
+subplot(3,1,1);
+plot(dataRawSeged.trial{1}(1,:));
+subplot(3,1,2);
+plot(foo(1,:));
+subplot(3,1,3);
+plot(bar(1,:))
+
+%%
+
+
+%{
+% % For example, to extract the first trial information
+% firstTrialTimePoint = Sample_Resp(1);
+% firstTrial_start = (firstTrialTimePoint - windowLen/2) * samplingFreq; % first 1/2 of window BEFORE Sample Response
+% firstTrial_end = (firstTrialTimePoint + windowLen/2) * samplingFreq; % last 1/2 of window AFTER Sample Response
+% firstTrial_Extracted = rawSignal(:, firstTrial_start : firstTrial_end);
+%}
 %{
 You need to save all trials' extracted information as a VECTOR
 instead of multiple variables, above is just for illustration
  The vector should have a dimensionality as:
 %}
-rawSignal_trialSampled = zeros(numChannel, windowLen * samplingFreq + 1, numTrial);
+%rawSignal_trialSampled = zeros(numChannel, windowLen * samplingFreq + 1, numTrial);
 rawSignal_AllTrialSampled = cell(numTrial,1);
 
- 
-%%
-trialLength = windowLen * samplingFreq; 
-for i=1:numTrial
-    trialStarts = floor(Sample_Resp(i)* samplingFreq)-trialLength/2;
-    trialEnds =  floor(Sample_Resp(i)* samplingFreq)+trialLength/2-1;
-    rawSignal_AllTrialSampled{i} = rawSignal(:,(trialStarts:trialEnds));
-end
-%%
+
+
+
+
+
+
+
+
 for i=1:length(rawSignal_AllTrialSampled)
     averagedSignal = rawSignal_AllTrialSampled{i}(1,:);
     i;
@@ -107,9 +169,6 @@ for i=1:length(rawSignal_AllTrialSampled)
     plot([1:1:120000],averagedSignal,'LineWidth',.1);
     hold on
 end
-% for i = 2:150
-%     averagedSignal = mean([rawSignal_AllTrialSampled{i}(1,:),averagedSignal],1);
-% end
 
 
 
@@ -119,12 +178,7 @@ end
 % Based on your literature reviews, what are the typical ways?
 
 %%
-for i=1:10
-    
-    figure();
-    plot((1:200:length(rawSignal)),rawSignal(i,(1:200:length(rawSignal))));
-    
-end
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % TODO 3: Visualize your processed LFP and compare it with other literatures
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
